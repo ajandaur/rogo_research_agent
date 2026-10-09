@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatSSE, SSE_PING } from "./sse.ts";
+import { formatSSE } from "./sse.ts";
 
 describe("formatSSE", () => {
   it("frames id, event and JSON data, terminated by a blank line", () => {
@@ -17,10 +17,5 @@ describe("formatSSE", () => {
       "",
       "",
     ]);
-  });
-
-  it("ping is a comment", () => {
-    expect(SSE_PING.startsWith(":")).toBe(true);
-    expect(SSE_PING.endsWith("\n\n")).toBe(true);
   });
 });

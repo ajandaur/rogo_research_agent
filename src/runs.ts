@@ -1,79 +1,21 @@
 /**
- * In-memory agent runs, streamed to one SSE subscriber each.
- *
- * A run starts as soon as it is created. Events produced before the client
- * opens the event stream are buffered and flushed when it attaches, so nothing
- * is lost in the gap between POST /api/runs and GET /events. This is not
- * replay: a run accepts exactly one subscriber, and a dropped stream cancels it.
+ * Runs the agent for one request and streams its events back as SSE on the
+ * same response. Closing the connection cancels the run.
  */
 
-import { randomUUID } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import type { Response } from "express";
 import { runAgent, type AgentEvent } from "./agent.ts";
-import { formatSSE, SSE_PING } from "./sse.ts";
+import { formatSSE } from "./sse.ts";
 
-/** Abort runs nobody subscribes to. */
-const SUBSCRIBE_TIMEOUT_MS = 30_000;
-/** Keep finished runs briefly so a late subscriber still gets the outcome. */
-const RETAIN_FINISHED_MS = 60_000;
-const HEARTBEAT_MS = 15_000;
-
-interface Run {
-  id: string;
-  controller: AbortController;
-  nextEventId: number;
-  pending: string[];
-  subscriber?: Response;
-  finished: boolean;
-  subscribeTimer: NodeJS.Timeout;
-  heartbeat?: NodeJS.Timeout;
-}
-
-const runs = new Map<string, Run>();
-
-export function createRun(history: Anthropic.MessageParam[]): string {
-  const id = randomUUID();
-  const run: Run = {
-    id,
-    controller: new AbortController(),
-    nextEventId: 1,
-    pending: [],
-    finished: false,
-    subscribeTimer: setTimeout(() => {
-      log(run, "no subscriber, cancelling");
-      run.controller.abort();
-    }, SUBSCRIBE_TIMEOUT_MS),
-  };
-  runs.set(id, run);
-  log(run, `started: ${lastUserText(history)}`);
-
-  runAgent(history, { signal: run.controller.signal, onEvent: (e) => onAgentEvent(run, e) })
-    .then((result) => finish(run, "done", { stopReason: result.stopReason }))
-    .catch((err) => {
-      if (run.controller.signal.aborted) {
-        finish(run, "error", { code: "cancelled", message: "The run was cancelled." });
-      } else if (err instanceof Anthropic.APIError) {
-        console.error(err);
-        finish(run, "error", { code: "upstream", message: "The model request failed." });
-      } else {
-        console.error(err);
-        finish(run, "error", { code: "internal", message: "Something went wrong on the server." });
-      }
-    });
-
-  return id;
-}
-
-export type AttachResult = "attached" | "not_found" | "already_attached";
-
-export function attach(runId: string, res: Response): AttachResult {
-  const run = runs.get(runId);
-  if (!run) return "not_found";
-  if (run.subscriber) return "already_attached";
-
-  clearTimeout(run.subscribeTimer);
-  run.subscriber = res;
+export async function streamRun(history: Anthropic.MessageParam[], res: Response) {
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      log("client disconnected, cancelling");
+      controller.abort();
+    }
+  });
 
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -81,47 +23,43 @@ export function attach(runId: string, res: Response): AttachResult {
     Connection: "keep-alive",
   });
   res.flushHeaders();
-  for (const frame of run.pending) res.write(frame);
-  run.pending = [];
 
-  if (run.finished) {
-    res.end();
-    return "attached";
-  }
+  let nextId = 1;
+  const send = (event: string, data: unknown) => {
+    if (!res.writableEnded) res.write(formatSSE(nextId++, event, data));
+  };
 
-  run.heartbeat = setInterval(() => res.write(SSE_PING), HEARTBEAT_MS);
-  res.on("close", () => {
-    clearInterval(run.heartbeat);
-    if (!run.finished) {
-      log(run, "subscriber disconnected, cancelling");
-      run.controller.abort();
+  log(`started: ${lastUserText(history)}`);
+  try {
+    const result = await runAgent(history, {
+      signal: controller.signal,
+      onEvent: (event) => forward(event, send),
+    });
+    send("done", { stopReason: result.stopReason });
+    log("done");
+  } catch (err) {
+    if (controller.signal.aborted) {
+      log("cancelled");
+    } else if (err instanceof Anthropic.APIError) {
+      console.error(err);
+      send("error", { code: "upstream", message: "The model request failed." });
+    } else {
+      console.error(err);
+      send("error", { code: "internal", message: "Something went wrong on the server." });
     }
-  });
-  return "attached";
-}
-
-/** Returns false if the run doesn't exist. Cancelling a finished run is a no-op. */
-export function cancelRun(runId: string): boolean {
-  const run = runs.get(runId);
-  if (!run) return false;
-  if (!run.finished && !run.controller.signal.aborted) {
-    log(run, "cancel requested");
-    run.controller.abort();
   }
-  return true;
+  res.end();
 }
 
-function onAgentEvent(run: Run, event: AgentEvent) {
-  // Once cancelled, the client has moved on; don't stream stragglers.
-  if (run.controller.signal.aborted) return;
-
+/** Maps internal agent events to wire events, logging tool activity. */
+function forward(event: AgentEvent, send: (event: string, data: unknown) => void) {
   switch (event.type) {
     case "iteration":
-      log(run, `iteration ${event.n}`);
+      log(`iteration ${event.n}`);
       break;
     case "tool_start":
-      log(run, `→ ${event.name} ${JSON.stringify(event.input)}`);
-      send(run, "tool_started", {
+      log(`→ ${event.name} ${JSON.stringify(event.input)}`);
+      send("tool_started", {
         toolUseId: event.toolUseId,
         name: event.name,
         input: event.input,
@@ -129,16 +67,12 @@ function onAgentEvent(run: Run, event: AgentEvent) {
       });
       break;
     case "tool_end":
-      log(run, `← ${event.name} (${event.ms}ms)`);
-      send(run, "tool_finished", {
-        toolUseId: event.toolUseId,
-        name: event.name,
-        durationMs: event.ms,
-      });
+      log(`← ${event.name} (${event.ms}ms)`);
+      send("tool_finished", { toolUseId: event.toolUseId, name: event.name, durationMs: event.ms });
       break;
     case "tool_failed":
-      log(run, `! ${event.name}: ${event.message}`);
-      send(run, "tool_failed", {
+      log(`! ${event.name}: ${event.message}`);
+      send("tool_failed", {
         toolUseId: event.toolUseId,
         name: event.name,
         durationMs: event.ms,
@@ -146,30 +80,9 @@ function onAgentEvent(run: Run, event: AgentEvent) {
       });
       break;
     case "text_delta":
-      send(run, "text_delta", { text: event.text });
+      send("text_delta", { text: event.text });
       break;
   }
-}
-
-function send(run: Run, event: string, data: unknown) {
-  const frame = formatSSE(run.nextEventId++, event, data);
-  if (run.subscriber) {
-    run.subscriber.write(frame);
-  } else {
-    run.pending.push(frame);
-  }
-}
-
-function finish(run: Run, event: "done" | "error", data: unknown) {
-  if (run.finished) return;
-  send(run, event, data);
-  run.finished = true;
-  log(run, event === "done" ? "done" : `error ${JSON.stringify(data)}`);
-
-  clearTimeout(run.subscribeTimer);
-  clearInterval(run.heartbeat);
-  run.subscriber?.end();
-  setTimeout(() => runs.delete(run.id), RETAIN_FINISHED_MS).unref();
 }
 
 /**
@@ -201,8 +114,8 @@ export function parseHistory(
   return { history };
 }
 
-function log(run: Run, message: string) {
-  console.log(`[run ${run.id.slice(0, 8)}] ${message}`);
+function log(message: string) {
+  console.log(`[run] ${message}`);
 }
 
 function lastUserText(history: Anthropic.MessageParam[]): string {
