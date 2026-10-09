@@ -4,7 +4,7 @@
  */
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { companies, documents, financials } from "./data.ts";
+import { companies, documents, financials, type Company } from "./data.ts";
 
 /** Thrown when a tool cannot service a request. */
 export class ToolError extends Error {}
@@ -31,7 +31,7 @@ export const toolSchemas: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        company: { type: "string", description: "The company name." },
+        company: { type: "string", description: "The company name or ticker." },
       },
       required: ["company"],
     },
@@ -43,7 +43,7 @@ export const toolSchemas: Anthropic.Tool[] = [
     input_schema: {
       type: "object",
       properties: {
-        company: { type: "string", description: "The company name." },
+        company: { type: "string", description: "The company name or ticker." },
       },
       required: ["company"],
     },
@@ -66,10 +66,24 @@ export const toolSchemas: Anthropic.Tool[] = [
   },
 ];
 
+/**
+ * Finds a company by its exact name or ticker, ignoring case and surrounding
+ * whitespace. Partial names ("Acme") are deliberately not resolved: they are
+ * ambiguous, and searchCompanies exists for that.
+ */
+export function resolveCompany(query: string): Company | undefined {
+  const needle = String(query).trim().toLowerCase();
+  return companies.find(
+    (c) => c.name.toLowerCase() === needle || c.ticker.toLowerCase() === needle,
+  );
+}
+
 async function searchCompanies(query: string) {
   await sleep(250);
-  const needle = String(query).toLowerCase();
-  const matches = companies.filter((c) => c.name.toLowerCase().includes(needle));
+  const needle = String(query).trim().toLowerCase();
+  const matches = companies.filter(
+    (c) => c.name.toLowerCase().includes(needle) || c.ticker.toLowerCase() === needle,
+  );
   return matches.map((c) => ({
     name: c.name,
     ticker: c.ticker,
@@ -79,7 +93,7 @@ async function searchCompanies(query: string) {
 
 async function getCompanyProfile(company: string) {
   await sleep(450);
-  const match = companies.find((c) => c.name === company);
+  const match = resolveCompany(company);
   if (!match) {
     throw new ToolError(`no profile found for "${company}"`);
   }
@@ -88,7 +102,8 @@ async function getCompanyProfile(company: string) {
 
 async function getFinancials(company: string) {
   await sleep(800);
-  const record = financials.find((f) => f.company === company);
+  const name = resolveCompany(company)?.name;
+  const record = financials.find((f) => f.company === name);
   if (!record) {
     throw new ToolError(`no financials found for "${company}"`);
   }
@@ -106,9 +121,14 @@ async function searchDocuments(query: string, company?: string) {
     );
   }
 
-  const pool = company
-    ? documents.filter((d) => d.company === company)
-    : documents;
+  let pool = documents;
+  if (company) {
+    const match = resolveCompany(company);
+    if (!match) {
+      throw new ToolError(`no company found for "${company}"`);
+    }
+    pool = documents.filter((d) => d.company === match.name);
+  }
 
   const scored = pool.map((doc) => {
     const haystack = `${doc.title} ${doc.body}`.toLowerCase();
