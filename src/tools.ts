@@ -163,3 +163,23 @@ export async function executeTool(
       throw new ToolError(`unknown tool "${name}"`);
   }
 }
+
+/** A short, human-readable description of a tool call, for progress UIs. */
+export function describeTool(name: string, input: Record<string, unknown>): string {
+  const company = (value: unknown) => resolveCompany(String(value))?.name ?? String(value);
+
+  switch (name) {
+    case "searchCompanies":
+      return `Searching companies for “${input.query}”`;
+    case "getCompanyProfile":
+      return `Reading ${company(input.company)} profile`;
+    case "getFinancials":
+      return `Pulling ${company(input.company)} financials`;
+    case "searchDocuments":
+      return input.company
+        ? `Searching ${company(input.company)} documents for “${input.query}”`
+        : `Searching documents for “${input.query}”`;
+    default:
+      return name;
+  }
+}

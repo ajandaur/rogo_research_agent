@@ -4,7 +4,7 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { companies } from "./data.ts";
-import { executeTool, toolSchemas } from "./tools.ts";
+import { describeTool, executeTool, toolSchemas } from "./tools.ts";
 
 const MODEL = process.env.ROGO_MODEL ?? "claude-sonnet-5";
 const MAX_ITERATIONS = 12;
@@ -28,9 +28,9 @@ ${companies
 
 export type AgentEvent =
   | { type: "iteration"; n: number }
-  | { type: "tool_start"; name: string; input: unknown }
-  | { type: "tool_end"; name: string; ms: number }
-  | { type: "tool_failed"; name: string; ms: number; message: string }
+  | { type: "tool_start"; toolUseId: string; name: string; input: unknown; label: string }
+  | { type: "tool_end"; toolUseId: string; name: string; ms: number }
+  | { type: "tool_failed"; toolUseId: string; name: string; ms: number; message: string }
   | { type: "text_delta"; text: string };
 
 export interface AgentResult {
@@ -62,15 +62,17 @@ export async function runToolCalls(
   return Promise.all(
     uses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
       const startedAt = Date.now();
-      onEvent({ type: "tool_start", name: use.name, input: use.input });
+      const input = use.input as Record<string, unknown>;
+      const base = { toolUseId: use.id, name: use.name };
+      onEvent({ type: "tool_start", ...base, input, label: describeTool(use.name, input) });
 
       try {
-        const output = await execute(use.name, use.input as Record<string, unknown>);
-        onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
+        const output = await execute(use.name, input);
+        onEvent({ type: "tool_end", ...base, ms: Date.now() - startedAt });
         return { type: "tool_result", tool_use_id: use.id, content: JSON.stringify(output) };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        onEvent({ type: "tool_failed", name: use.name, ms: Date.now() - startedAt, message });
+        onEvent({ type: "tool_failed", ...base, ms: Date.now() - startedAt, message });
         return { type: "tool_result", tool_use_id: use.id, content: message, is_error: true };
       }
     }),

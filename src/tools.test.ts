@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { executeTool, resolveCompany, ToolError } from "./tools.ts";
+import { describeTool, executeTool, resolveCompany, ToolError } from "./tools.ts";
+
+describe("describeTool", () => {
+  it("names the resolved company", () => {
+    expect(describeTool("getFinancials", { company: "glbx" })).toBe("Pulling Globex Inc financials");
+    expect(describeTool("searchDocuments", { query: "risk", company: "UMBR" })).toBe(
+      "Searching Umbrella Health documents for “risk”",
+    );
+  });
+});
 
 describe("resolveCompany", () => {
   it("matches names case-insensitively", () => {
