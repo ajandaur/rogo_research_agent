@@ -3,13 +3,16 @@ import SwiftUI
 /// Renders block-level markdown: headings, paragraphs, bullet lists and tables.
 /// Tables scroll horizontally instead of squeezing columns on a phone.
 struct MarkdownView: View {
-    private let blocks: [MarkdownBlock]
+    /// Stored as text, not parsed blocks, so SwiftUI can compare it and skip
+    /// `body` (and the parse) for messages that haven't changed.
+    private let text: String
 
     init(_ text: String) {
-        blocks = MarkdownParser.parse(text)
+        self.text = text
     }
 
     var body: some View {
+        let blocks = MarkdownParser.parse(text)
         VStack(alignment: .leading, spacing: 12) {
             // Blocks only ever append or change in place while streaming, so
             // position is a stable identity.
