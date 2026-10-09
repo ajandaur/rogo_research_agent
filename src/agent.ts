@@ -28,7 +28,7 @@ export type AgentEvent =
   | { type: "iteration"; n: number }
   | { type: "tool_start"; name: string; input: unknown }
   | { type: "tool_end"; name: string; ms: number }
-  | { type: "tool_failed"; name: string; message: string };
+  | { type: "tool_failed"; name: string; ms: number; message: string };
 
 export interface AgentResult {
   answer: string;
@@ -80,18 +80,24 @@ export async function runAgent(
       const startedAt = Date.now();
       onEvent({ type: "tool_start", name: use.name, input: use.input });
 
-      let content: string;
       try {
         const output = await executeTool(use.name, use.input as Record<string, unknown>);
-        content = JSON.stringify(output);
+        onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: JSON.stringify(output),
+        });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        content = `${use.name} returned: ${message}`;
-        onEvent({ type: "tool_failed", name: use.name, message });
+        onEvent({ type: "tool_failed", name: use.name, ms: Date.now() - startedAt, message });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: use.id,
+          content: message,
+          is_error: true,
+        });
       }
-
-      onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
-      toolResults.push({ type: "tool_result", tool_use_id: use.id, content });
     }
 
     messages.push({ role: "user", content: toolResults });
