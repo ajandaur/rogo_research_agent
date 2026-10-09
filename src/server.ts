@@ -16,8 +16,15 @@ app.post("/api/chat", async (req, res) => {
   const message = String(req.body.message ?? "");
   console.log(`\n[chat] ${message}`);
 
+  // Stop the agent if the client goes away before we answer.
+  const controller = new AbortController();
+  res.on("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+
   try {
-    const result = await runAgent(message, (event) => {
+    const history = [{ role: "user" as const, content: message }];
+    const result = await runAgent(history, { signal: controller.signal, onEvent: (event) => {
       switch (event.type) {
         case "iteration":
           console.log(`[agent] iteration ${event.n}`);
@@ -32,7 +39,7 @@ app.post("/api/chat", async (req, res) => {
           console.log(`[tool]  ! ${event.name}: ${event.message}`);
           break;
       }
-    });
+    } });
 
     res.json({ answer: result.answer });
   } catch (err) {

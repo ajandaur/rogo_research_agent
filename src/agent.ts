@@ -47,9 +47,10 @@ function textOf(message: Anthropic.Message): string {
 type ToolExecutor = (name: string, input: Record<string, unknown>) => Promise<unknown>;
 
 /**
- * Runs every tool call from one model turn concurrently. Each call is wrapped so
- * it never rejects, which keeps results in the same order as `uses` (the API
- * requires a tool_result for every tool_use) and lets one failure not sink the rest.
+ * Runs every tool call from one model turn concurrently. Promise.all keeps
+ * results in the same order as `uses`. Each call catches its own errors and
+ * returns an is_error tool_result, so one failure doesn't reject Promise.all
+ * and discard the other results. The API needs a tool_result for every tool_use.
  */
 export async function runToolCalls(
   uses: Anthropic.ToolUseBlock[],
@@ -74,26 +75,41 @@ export async function runToolCalls(
   );
 }
 
+export interface RunAgentOptions {
+  signal: AbortSignal;
+  onEvent: (event: AgentEvent) => void;
+}
+
+/**
+ * Runs the agent over a conversation. `history` is the prior turns plus the new
+ * question (it must end with a user message); it is copied, not mutated.
+ * Aborting `signal` stops the in-flight model request and rejects before the
+ * next turn starts.
+ */
 export async function runAgent(
-  question: string,
-  onEvent: (event: AgentEvent) => void,
+  history: Anthropic.MessageParam[],
+  { signal, onEvent }: RunAgentOptions,
 ): Promise<AgentResult> {
-  const messages: Anthropic.MessageParam[] = [{ role: "user", content: question }];
+  const messages: Anthropic.MessageParam[] = [...history];
 
   let draft = "";
   let iterations = 0;
 
   while (iterations < MAX_ITERATIONS) {
+    signal.throwIfAborted();
     iterations++;
     onEvent({ type: "iteration", n: iterations });
 
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      system: SYSTEM_PROMPT,
-      tools: toolSchemas,
-      messages,
-    });
+    const response = await client.messages.create(
+      {
+        model: MODEL,
+        max_tokens: 16000,
+        system: SYSTEM_PROMPT,
+        tools: toolSchemas,
+        messages,
+      },
+      { signal },
+    );
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -106,7 +122,9 @@ export async function runAgent(
       break;
     }
 
+    // Mock tools can't be interrupted mid-sleep; drop their results if cancelled meanwhile.
     const toolResults = await runToolCalls(toolUses, onEvent);
+    signal.throwIfAborted();
     messages.push({ role: "user", content: toolResults });
   }
 
