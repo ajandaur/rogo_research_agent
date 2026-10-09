@@ -15,20 +15,23 @@ struct Composer: View {
                 .background(.background, in: RoundedRectangle(cornerRadius: 20))
                 .overlay(RoundedRectangle(cornerRadius: 20).stroke(.quaternary))
 
-            if model.runState == .streaming {
-                Button("Stop", systemImage: "stop.circle.fill") {
-                    model.cancel()
+            Group {
+                if model.runState == .streaming {
+                    Button("Stop", systemImage: "stop.circle.fill") {
+                        model.cancel()
+                    }
+                } else {
+                    Button("Send", systemImage: "arrow.up.circle.fill") {
+                        model.send()
+                        focused = false
+                    }
+                    .disabled(!model.canSend)
                 }
-            } else {
-                Button("Send", systemImage: "arrow.up.circle.fill") {
-                    model.send()
-                    focused = false
-                }
-                .disabled(!model.canSend)
             }
+            // Large icon for the button only; the text field keeps body text.
+            .labelStyle(.iconOnly)
+            .font(.title)
         }
-        .labelStyle(.iconOnly)
-        .font(.title)
         .padding(.horizontal)
         .padding(.vertical, 8)
         .background(.bar)
