@@ -8,7 +8,7 @@
 - **Companies resolve by name or ticker, ignoring case** ("glbx", "Initech"). Partial names like "Acme" still go through search on purpose, because Acme Corp and Acme Robotics are both real candidates.
 - **One streaming endpoint:** `POST /api/runs/stream` returns server-sent events: tool started/finished/failed, text deltas, then `done` or `error`. Closing the connection cancels the run on the server. I first built separate start/stream/cancel endpoints, then cut them. The app gets the same behaviour from one request, and on iOS, "Stop" is just cancelling a Swift `Task`.
 - **Answers are formatted for a phone.** One line in the system prompt asks for a direct answer first, short sections, and tables of at most 4 columns. The app renders headings, paragraphs, bullets and tables; wide tables scroll sideways instead of squeezing.
-- **iOS app:** a chat screen with live tool status rows, streaming text, Stop, Retry (after an error *or* a Stop), New conversation, and suggested questions. Follow-up questions send the earlier completed turns as history. The pieces worth testing (SSE parser, markdown parser, view model) are separate types with unit tests.
+- **iOS app:** a chat screen with live tool status rows, streaming text, Stop, Retry (after an error *or* a Stop), New conversation, and suggested questions. Follow-up questions send the earlier completed turns as history. The pieces worth testing have unit tests: on the server, company lookup, `runToolCalls` (result order, concurrency, error results) and history validation; in the app, the SSE parser, markdown parser and view model.
 - **Known weak spot: losing the connection loses the answer.** With one streaming request, the connection *is* the run. If the phone loses signal, or iOS suspends the app, the server cancels the run and the app shows an error with Retry. I chose that to keep the scope small (and so the server doesn't pay for answers nobody sees). For MDs moving through dead zones it's the first thing I'd change (next section).
 
 ## Deliberately not done
@@ -24,3 +24,7 @@
   - Every text delta (~160 per answer) updates the UI and re-parses that one message. That's fine at this size; batching would be next.
   - Auto-scroll follows new text, which also pulls you back down if you scroll up mid-answer.
   - Markdown covers what the agent produces. Nested lists, code blocks and links aren't styled specially, and a table shows as plain text for a moment until its separator line streams in.
+
+## Tooling
+
+- Built with Claude Code. Harness config is in `CLAUDE.md`. I also used the SwiftUI Pro and Swift Concurrency Pro review skills to check the app for performance and concurrency issues.
