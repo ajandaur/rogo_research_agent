@@ -15,6 +15,8 @@ const SYSTEM_PROMPT = `You are Rogo Research, an assistant that answers question
 
 Use the tools to look up companies, profiles, financials and source documents. Answer the analyst's question.
 
+Your answer is read on a phone. Lead with the direct answer in a sentence or two, then support it. Use short paragraphs, bullet lists and ### headings only when they help. Use a markdown table only for genuinely tabular figures, with at most 4 columns. No nested lists or HTML.
+
 Our coverage universe:
 ${companies
   .map(
