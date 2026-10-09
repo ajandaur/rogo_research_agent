@@ -30,11 +30,13 @@ export type AgentEvent =
   | { type: "iteration"; n: number }
   | { type: "tool_start"; name: string; input: unknown }
   | { type: "tool_end"; name: string; ms: number }
-  | { type: "tool_failed"; name: string; ms: number; message: string };
+  | { type: "tool_failed"; name: string; ms: number; message: string }
+  | { type: "text_delta"; text: string };
 
 export interface AgentResult {
   answer: string;
   iterations: number;
+  stopReason: "end_turn" | "max_iterations";
 }
 
 function textOf(message: Anthropic.Message): string {
@@ -100,7 +102,7 @@ export async function runAgent(
     iterations++;
     onEvent({ type: "iteration", n: iterations });
 
-    const response = await client.messages.create(
+    const stream = client.messages.stream(
       {
         model: MODEL,
         max_tokens: 16000,
@@ -110,6 +112,8 @@ export async function runAgent(
       },
       { signal },
     );
+    stream.on("text", (text) => onEvent({ type: "text_delta", text }));
+    const response = await stream.finalMessage();
 
     messages.push({ role: "assistant", content: response.content });
 
@@ -131,7 +135,9 @@ export async function runAgent(
   if (!draft) {
     draft =
       "I looked at a number of sources but ran out of research steps before I could pull the answer together. Try asking a narrower question.";
+    onEvent({ type: "text_delta", text: draft });
+    return { answer: draft, iterations, stopReason: "max_iterations" };
   }
 
-  return { answer: draft, iterations };
+  return { answer: draft, iterations, stopReason: "end_turn" };
 }
