@@ -42,6 +42,36 @@ function textOf(message: Anthropic.Message): string {
     .join("\n");
 }
 
+type ToolExecutor = (name: string, input: Record<string, unknown>) => Promise<unknown>;
+
+/**
+ * Runs every tool call from one model turn concurrently. Each call is wrapped so
+ * it never rejects, which keeps results in the same order as `uses` (the API
+ * requires a tool_result for every tool_use) and lets one failure not sink the rest.
+ */
+export async function runToolCalls(
+  uses: Anthropic.ToolUseBlock[],
+  onEvent: (event: AgentEvent) => void,
+  execute: ToolExecutor = executeTool,
+): Promise<Anthropic.ToolResultBlockParam[]> {
+  return Promise.all(
+    uses.map(async (use): Promise<Anthropic.ToolResultBlockParam> => {
+      const startedAt = Date.now();
+      onEvent({ type: "tool_start", name: use.name, input: use.input });
+
+      try {
+        const output = await execute(use.name, use.input as Record<string, unknown>);
+        onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
+        return { type: "tool_result", tool_use_id: use.id, content: JSON.stringify(output) };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        onEvent({ type: "tool_failed", name: use.name, ms: Date.now() - startedAt, message });
+        return { type: "tool_result", tool_use_id: use.id, content: message, is_error: true };
+      }
+    }),
+  );
+}
+
 export async function runAgent(
   question: string,
   onEvent: (event: AgentEvent) => void,
@@ -74,32 +104,7 @@ export async function runAgent(
       break;
     }
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const use of toolUses) {
-      const startedAt = Date.now();
-      onEvent({ type: "tool_start", name: use.name, input: use.input });
-
-      try {
-        const output = await executeTool(use.name, use.input as Record<string, unknown>);
-        onEvent({ type: "tool_end", name: use.name, ms: Date.now() - startedAt });
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: use.id,
-          content: JSON.stringify(output),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        onEvent({ type: "tool_failed", name: use.name, ms: Date.now() - startedAt, message });
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: use.id,
-          content: message,
-          is_error: true,
-        });
-      }
-    }
-
+    const toolResults = await runToolCalls(toolUses, onEvent);
     messages.push({ role: "user", content: toolResults });
   }
 
